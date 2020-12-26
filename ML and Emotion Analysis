@@ -9,11 +9,11 @@ library(readtext) #Importing text files hustle free
 library(data.table)   # manage everything!
 library(quanteda)     # manage corpora
 library(stringr)      # manipulate strings
-library(textstem)     # stemminlibraryg
+library(textstem)     # stemming library
 library(lexicon)      # lexicons for sentiment
 library(sentimentr)   # nlp sentiment
 library(topicmodels)  # LDA
-library(ggplot2)      # Data viz (together with the following three)
+library(ggplot2)      # data viz (together with the following three)
 library(ggridges)     
 library(lemon)        
 library(patchwork)    
