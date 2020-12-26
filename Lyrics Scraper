@@ -1,0 +1,95 @@
+
+# Package to scrape lyrics from AZlyrics and other websites. Here's the documentation: https://pypi.org/project/azapi/
+import azapi
+
+# Used to randomize sleep time for AZlyrics requests (so as to avoid getting timed out - or at least minimizing the risk)
+import random
+
+# We use BeautifulSoup for webscraping: we create a dictionary of proxies from sslproxies.org to then pass it to the proxy parameter
+# of Azapi's AZlyrics method
+import requests
+from bs4 import BeautifulSoup
+from random import choice
+
+
+def proxy_generator():
+    response = requests.get("https://sslproxies.org/")
+    soup = BeautifulSoup(response.content, "html5lib")
+    proxy = {
+        "https": choice(
+            list(
+                map(
+                    lambda x: x[0] + ":" + x[1],
+                    list(
+                        zip(
+                            map(lambda x: x.text, soup.findAll("td")[::8]),
+                            map(lambda x: x.text, soup.findAll("td")[1::8]),
+                        )
+                    ),
+                )
+            )
+        )
+    }
+    return proxy
+
+
+x = proxy_generator()
+
+# Reading the file which containes the titles of the songs to download
+my_file = open(
+    "C:/Users/Pepe/Desktop/Lyrics/track_title_2_still_to_download.txt",
+    "r",
+    encoding="utf8",
+)
+# Reading the file and setting it as a string
+my_lyrics = my_file.read()
+my_file.close()
+my_lyrics_string = str(my_lyrics)
+
+
+# Removing unwanted patterns from the titles prior to creating a list of titles
+my_lyrics_string = my_lyrics_string.replace("'", "")
+my_lyrics_string = my_lyrics_string.replace('"', "")
+my_lyrics_string = my_lyrics_string.replace("[", "")
+my_lyrics_string = my_lyrics_string.replace("]", "")
+
+# creating a list of titles
+titles_list = my_lyrics_string.split(",")
+
+# Checking how many songs we still need to download
+print(len(titles_list))
+
+# Passing the list of titles to the Azapi's AZlyrics.com method to get the titles of the desired songs by
+# means of the titles only. As said, we also set proxies and random sleep times (from 30 to 60 seconds) to
+# avoid getting timed out or captcha
+for track in titles_list:
+    # This allows to retrieve lyrics by means of the title only
+    API = azapi.AZlyrics("duckduckgo", accuracy=0.8, proxies=x)
+    API.title = track.lower().strip()
+    songs_lyrics = API.getLyrics(sleep=random.randint(30, 60))
+    song_title = API.title
+    song_artist = API.artist
+
+    # Txt files are populated with the song's name, artist, and song's lyrics, while the name of the song
+    # which has just been retrieved is deleted from the list, while a preexisting file with the remaining songs to download is
+    # populated with the updated list (so that when ew get timed out we can can avoid downloading the same songs again)
+    try:
+        my_file = open("lyrics_" + track.strip() + ".txt", "w", encoding="utf8")
+        my_file.write(song_title + " --- " + song_artist + "\n" + songs_lyrics)
+        my_file.close()
+        titles_list.remove(track)
+
+        my_file = open(
+            "C:/Users/Pepe/Desktop/Track_Lyrics/track_title_2_still_to_download.txt",
+            "w",
+            encoding="utf8",
+        )
+        my_file.write(str(titles_list))
+        my_file.close()
+        print("The song " + API.title + " was downloaded")
+        print("Only " + str(len(titles_list)) + " to go")
+
+    except:
+        print("The song " + API.title + " has not been found")
+
+
