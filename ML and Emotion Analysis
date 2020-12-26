@@ -1,0 +1,732 @@
+
+##########################################################
+################## NLP ON SONGS' LYRICS ##################
+##########################################################
+
+# Importing libraries to be used 
+library(plyr) #CRAN subpackage to work with arrays, split and manipulate data
+library(readtext) #Importing text files hustle free
+library(data.table)   # manage everything!
+library(quanteda)     # manage corpora
+library(stringr)      # manipulate strings
+library(textstem)     # stemminlibraryg
+library(lexicon)      # lexicons for sentiment
+library(sentimentr)   # nlp sentiment
+library(topicmodels)  # LDA
+library(ggplot2)      # Data viz (together with the following three)
+library(ggridges)     
+library(lemon)        
+library(patchwork)    
+library(tibble) #Subset of tidyverse used to work with large dataframes
+library(quanteda.textmodels) #to deal with corpora, dfm, and apply LDA and Naive Bayes
+library(cld3) # Gold standard anguage detection package by Google
+library(tidyverse) #Viz for GGplot2, data manipulation with dplyr
+library(xfun) # Useful subpackage of CRAN providing functions for dataframe matching
+library(tm) #Textmodels
+library(naivebayes) #Cross table and confusion matrix for Naive Bayes Model
+library(caret) #Streamlining model training process
+
+# 1. IMPORTING THE DATA ---------------------------------------------------------
+
+setwd("/Users//Giacomo Luppi/Desktop/")
+
+#Reading the folder containing the 6507 .txt files containing the lyrics we webscraped from AZlyrics.com
+lyrics_raw = readtext(file = "Lyrics Final Final/",
+                      dvsep = "_",
+                  encoding = "UTF-8" )
+
+#Setting the text of the files as a character object
+lyrics_raw = as.character( lyrics_raw$text )
+
+# 2. TEXT PREPROCESSING -----------------------------------------------------------
+
+#Regex is used here to be as precise and efficient as possible in manipulating strings
+# Remove the pattern "[text]"
+lyrics_cln1 = str_replace_all( lyrics_raw, 
+                                 "\\[.*?\\]", 
+                                 "" )
+#Remove "(text)"
+lyrics_cln2 = str_replace_all( lyrics_cln1, 
+                               "\\([^()]*\\)", 
+                               "" )
+
+#Remove "{text}"
+lyrics_cln2 = str_replace_all( lyrics_cln2, 
+                               "\\{[^()]*\\}", 
+                               "" )
+
+# Removing the newline character for clarity purposes
+lyrics_cln3 = sub(".*\n","",perl=TRUE, lyrics_cln2)
+  
+
+# Fixing multiple spacing
+lyrics_cln5 = str_replace_all( lyrics_cln3, 
+                                 "\\s{2,100}", 
+                                 " " )
+# Fixing  pattern " , word"
+lyrics_cln6 = str_replace_all( lyrics_cln5, 
+                                 "\\s\\,", 
+                                 "," )
+  
+lyrics_ok = str_replace_all(lyrics_cln6, "[\r\n]", "")
+
+
+#Creating an object containing the names of the 6507 .txt files to be used as index of corpus
+title <- list.files("/Users/Giacomo Luppi/Desktop/Lyrics Final Final", pattern = ".txt")
+
+#Removing the word "lyrics_" in the filenames so as to only get the songs' title in the "title" character object
+title = sub("^[^_]*_", "", title)
+
+#Removing the .txt name from the object...almost done with pre processing!
+title = str_remove(title, ".txt")
+
+
+# 3. LANGUAGE DETECTION -----------------------------------------------------------
+
+#Using cld3 - amazing package for language detection - to detect the language of our 6507 songs
+language_song <-detect_language(lyrics_ok)
+
+#Creating a dataframe with title, language and respective lyrics
+song_df <- data.frame(title, language_song, lyrics_ok)
+
+count(song_df)
+#Filtering songs based on language, we are only keeping the ones 
+#in English to be precise in the following steps of the NLP
+song_filtered = song_df %>% filter(language_song == "en")
+
+#Retrieving the lyrics in English from the newly created dataset
+lyrics_ok <-song_filtered$lyrics_ok
+
+#Setting the title object as a character containing only the titles of the songs in English
+title<-song_filtered$title
+
+#Quick check to make sure the length of the titles and the respective lyrics are matching...all good!
+length(title)
+length(lyrics_ok)
+
+#Identifying the duplicated values to remove them from the folder (...where do these rare duplicated values come from?
+#During the web scraping process, a few songs with extremely common titles were retrieved more than once [134 songs out of 6507]). 
+#Apart from ensuring precision, these lines ensure  we can pass the title character as the titles of the tracks -->we are making sure they have the same length
+duplicated(title)
+title[duplicated(title)]
+
+write(title, file = "titles.csv")
+
+# 4. CREATING THE CORPUS -----------------------------------------------------
+#Now we start having some fun and finally create the corpus
+lyrics_crps = corpus(lyrics_ok, docnames = title)
+
+# Checking number of documents in the corpus...6507 in total!
+N = ndoc( lyrics_crps )
+
+# Assigning a unique identifier to each doc called "id_doc"
+docvars( lyrics_crps, "id_doc" ) = str_pad( 1L:N, width = 4, pad = "0" )
+
+
+# 5. TOKENIZATION -----------------------------------------------------------
+
+#Creating the tokens through Quanteda while also making sure to remove irrelevant things like punctuation
+#symbols, urls, and dividing hyphens. We also proceed to apply stemming to the tokens. 
+lyrics_tok = quanteda::tokens(lyrics_crps, 
+                                remove_punct = TRUE, remove_symbols = TRUE, remove_url = TRUE, split_hyphens = TRUE)
+tokens_wordstem( lyrics_tok )
+
+#Removing some more stopwords which are more likely to be there in songs
+toks_final <- tokens_select(lyrics_tok, pattern = c("yeah", "wo", "oh", "na", "nah", "naa", "yea", "ya", "ooh", "just", "get", "ain't", "aint"), selection = "remove")
+
+
+# 6. DFM ------------------------------
+
+#Creating the DFM while applying .tolower() and removing stopwords
+lyrics_dfm = dfm(toks_final ,
+                   tolower = TRUE,
+                   stem = TRUE,
+                   remove = stopwords("english")
+                  )
+
+#Quick check to see if everything is how it's supposed to
+head(lyrics_dfm, 50)
+class( lyrics_dfm )
+
+# Exploring data via wordcloud...please refer to the Visualization Section of our Code Base
+# to see the Python code used to create the shaped WordClouds which are included in the report.
+#These are only used to get a glimpse of trends and patterns across documents
+lyrics_dfm_wc= textplot_wordcloud(
+  lyrics_dfm,
+  min_size = 2,
+  max_size = 10,
+  min_count = 5,
+  max_words = 500,
+  color = "darkblue",
+  font = NULL,
+  adjust = 0,
+  rotation = 0.1,
+  random_order = FALSE,
+  random_color = FALSE,
+  ordered_color = TRUE,
+  labelcolor = "gray20",
+  labelsize = 1.5,
+  labeloffset = 0,
+  fixed_aspect = TRUE,
+  comparison = FALSE
+)
+
+#Trimming the DFM to only retain the most relevant words. Our 0.01 and 0.9 threshold enale us to get
+#to a lower perplexity while also reducing the number of features
+lyrics_dfm_trim = dfm_trim( lyrics_dfm,
+                             # min 1%
+                             min_docfreq = 0.001,
+                             #  max 90%
+                             max_docfreq = 0.9,
+                             docfreq_type = "prop" ) 
+
+
+# 7. SENTIMENT ANALYSIS ON TONE -------------------------------------------------
+
+#Installing more packages which will be used to retrieve the dictionaries we will be using for tone detection
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load_gh("trinker/sentimentr", "trinker/stansent", "sfeuerriegel/SentimentAnalysis", "wrathematics/meanr")
+pacman::p_load(syuzhet, qdap, microbenchmark, RSentiment)
+
+#Creating 4 vectors , each with a different dictionary detecting positive and negative words in our corpus (syuzhet, bing, afinn, and nrc are used)
+syuzhet_vector <- get_sentiment(lyrics_crps, method="syuzhet")
+bing_vector <- get_sentiment(lyrics_crps, method="bing")
+afinn_vector <- get_sentiment(lyrics_crps, method="afinn")
+nrc_vector <- get_sentiment(lyrics_crps, method="nrc")
+
+?get_sentiment
+#Creating a first dataframe with the 4 vectors and naming its columns accordingly.
+#This one is created using the sign() function so as to normalize the results across the 
+#four dictionaries. If the number of positive songs detected is higher than the one, then the resulting value will be 1, 
+#if the tone detected is <0, the value associated to the song will be -1 (clearly values equal to 0 will remain as such)
+df1<- data.frame(sign(syuzhet_vector), sign(bing_vector), sign(afinn_vector), sign(nrc_vector))
+colnames(df1) <- c("syuzhet_norm", "bing_norm", "afinn_norm", "nrc_norm")
+
+#Here we do the same but we keep the BOG results of the dictionaries as they are, without any normalization
+df2<- data.frame(syuzhet_vector, bing_vector, afinn_vector, nrc_vector)
+colnames(df2) <- c("syuzhet", "bing", "afinn", "nrc")
+
+#Binding the 2 dataframes
+df3 <-cbind(df1, df2)
+
+# 8. SENTIMENT ANALYSIS ON EMOTIONS -------------------------------------------------
+
+#Using Suyzhet Package we retrieve the get_nrc_sentiment which leverages on the nrc dictionary to 
+#quantify the emotions of our lyrics
+x = get_nrc_sentiment(lyrics_ok, language = "english")
+
+
+#But the raw result is not enough! We now normalize the results based on respective songs' length.
+#Here we start by calculating the length of the songs (# of words)
+n_words = sapply(strsplit(lyrics_ok, " "), length)
+
+#Creating a dataframe with titles, emotions and respective songs' length
+x_DT= cbind(x,n_words)
+
+#Setting it a a data table for more efficient processing...as we have been taught!
+setDT(x_DT)
+
+#Normalizing based on total word count of each song
+x_DT[ , anger_norm := anger / n_words]
+x_DT[ , anticipation_norm := anticipation / n_words ]
+x_DT[ , disgust_norm := disgust / n_words ]
+x_DT[ , fear_norm := fear / n_words ]
+x_DT[ , joy_norm := joy / n_words ]
+x_DT[ , sadness_norm := sadness / n_words ]
+x_DT[ , surprise_norm := surprise / n_words ]
+x_DT[ , trust_norm := trust / n_words ]
+x_DT[ , negative_norm := negative / n_words ]
+x_DT[ , positive_norm := positive / n_words ]
+
+#Normalizing based on amount of words found by the nrc dictionary
+x_DT[ , anger_norm2 := anger / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger)]
+x_DT[ , anticipation_norm2 := anticipation / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger) ]
+x_DT[ , disgust_norm2 := disgust / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger) ]
+x_DT[ , fear_norm2 := fear / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger) ]
+x_DT[ , joy_norm2 := joy / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger) ]
+x_DT[ , sadness_norm2 := sadness / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger) ]
+x_DT[ , surprise_norm2 := surprise / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger) ]
+x_DT[ , trust_norm2 := trust / (anticipation + disgust + fear + joy + sadness + surprise + trust + anger) ]
+x_DT[ , negative_norm2 := negative / (positive + negative) ]
+x_DT[ , positive_norm2 := positive / (positive + negative) ]
+
+#Creating a dataframe including both dictionary based and emotion based NLP
+sentiment <-cbind(df3, x_DT )
+
+
+# Computing verbal tone at document level through the use of the dictionaries seen in class
+#Creating the list of negatives and positives with both jr and setting it as dictionary
+jr_dictionary = list( negative_bog_jr = hash_sentiment_jockers_rinker[ y < 0, x ],
+                      positive_bog_jr = hash_sentiment_jockers_rinker[ y > 0, x ] )
+jr_dictionary = dictionary( jr_dictionary )
+
+# BOG with jr and setting it as a DT
+lyrics_jr = dfm( lyrics_dfm_trim, dictionary = jr_dictionary )
+lyrics_jr = convert( lyrics_jr, "data.frame" )
+
+#Binding the preexisting dataframe with emotion and tone variables and the newly calculated BOG values with jr dictionary
+sentiment_final <- cbind(sentiment, lyrics_jr)
+sentiment_final$doc_id <- NULL
+
+#Writing the file to then match it with database with API features (please refer to database merging section of our code base for more on this)
+write.table(sentiment_final, "sentiment_database.csv", sep = ",", row.names = FALSE)
+
+# 9. LDA ----------------------------------------------------------
+
+#LDA WITH MONOGRAMS
+
+#From dfm to topicmodel 
+dfm_for_LDA = convert(lyrics_dfm_trim , to = "topicmodels" )
+
+# We identify topic numbers and then loop through them to obtain a more efficient result and to have a precise idea on how perplexity evolves
+#as topics increase
+k = c( 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20 )
+kvec = formatC( k, width = 2, flag = "0" )
+
+for ( i in seq_along( k ) ) {
+  cat( "Computing LDA with", k[ i ], "topics\n" )
+  assign( paste0( "LDA_", kvec[ i ] ), 
+          LDA( dfm_for_LDA, k[ i ] ) )
+} 
+
+
+#Getting the first 30 words for each topic from 2 to 20 topics
+n_words = 30
+get_terms( LDA_02, n_words )
+get_terms( LDA_03, n_words )
+get_terms( LDA_04, n_words )
+get_terms( LDA_05, n_words )
+get_terms( LDA_06, n_words )
+get_terms( LDA_07, n_words )
+get_terms( LDA_08, n_words )
+get_terms( LDA_09, n_words )
+get_terms( LDA_10, n_words )
+get_terms( LDA_15, n_words )
+get_terms( LDA_20, n_words )
+
+
+#Calculating perplexity as more topics are detected
+lda_obj = objects( pattern = "LDA\\_" )
+perp = vector( "numeric", length( lda_obj ) )
+
+for ( i in seq_along( perp ) ) {
+  perp[ i ] = perplexity( get( lda_obj[ i ] ) )
+}
+
+names( perp ) = kvec
+perp_dt = data.table( k = as.integer( names( perp ) ),
+                      perplexity = perp )
+
+#Visualizing perplexity trend with ggplot
+ggplot( data = perp_dt, aes( x = k, y = perplexity ) ) +
+  geom_line() + geom_point() + 
+  xlab( "Number of Topics [k]" ) +
+  ylab( "Perplexity Index" ) +
+  scale_x_continuous( breaks = c( 2, 3,4, 5, 6, 7, 8, 9, 10, 15, 20 ) ) + 
+  ggtitle( "Perplexity Index by the Number of Topics" )
+
+
+#Getting the words of the topics for each topic in a dataframe so they are easily retrievable
+LDA_topics <- cbind(as.data.frame(get_terms( LDA_06, n_words )), 
+                                     as.data.frame(get_terms( LDA_07, n_words )), 
+                                    as.data.frame(get_terms( LDA_08, n_words )),
+                                    as.data.frame(get_terms( LDA_09, n_words )))
+
+#Writing a csv with the top 30 words for each topic
+write.table(LDA_topics, "LDA_top30_monograms.csv", sep = ",", row.names = FALSE)
+
+
+#Getting the topic corresponding to each song into a dataframe for each topic number from 6 to 10
+
+#6 topics (subsequent and corresponding parts of this script which do  the same for 7 to 10 topics follow)
+
+#Getting the topic list into a dataframe
+topics_LDA<-topics(LDA_06)
+LDA_06.topics <- as.data.frame(topics(LDA_06))
+
+#Counting to make sure all observations have been successfully retrieved
+count(LDA_06.topics)
+
+#Converting to datatable, adding title and putting it at position 1 of the dataframe
+x <-setDT(LDA_06.topics)
+x$Title=title
+x_06 <-x[,c(2,1)]
+
+#Writing a file with the corresponding values
+write.table(x, "LDA_topics_monograms_06.csv", sep = ",")
+
+
+#7 topics 
+#Getting the topic list into a dataframe
+topics_LDA<-topics(LDA_07)
+LDA_07.topics <- as.data.frame(topics(LDA_07))
+
+#Counting to make sure all observations have been successfully retrieved
+count(LDA_07.topics)
+
+#Converting to datatable, adding title and putting it at position 1 of the dataframe
+x <-setDT(LDA_07.topics)
+x$Title=title
+x_07 <-x[,c(2,1)]
+
+#Writing a file with the corresponding values
+write.table(x_07, "LDA_topics_monograms_07.csv", sep = ",")
+
+
+#8 topics
+#Getting the topic list into a dataframe
+topics_LDA<-topics(LDA_08)
+LDA_08.topics <- as.data.frame(topics(LDA_08))
+
+#Counting to make sure all observations have been successfully retrieved
+count(LDA_08.topics)
+
+#Converting to datatable, adding title and putting it at position 1 of the dataframe
+x <-setDT(LDA_08.topics)
+x$Title=title
+x_08 <-x[,c(2,1)]
+
+#Writing a file with the corresponding values
+write.table(x_08, "LDA_topics_monograms_08.csv", sep = ",")
+
+
+#9 topics
+#Getting the topic list into a dataframe
+topics_LDA<-topics(LDA_09)
+LDA_09.topics <- as.data.frame(topics(LDA_09))
+
+#Counting to make sure all observations have been successfully retrieved
+count(LDA_09.topics)
+
+#Converting to datatable, adding title and putting it at position 1 of the dataframe
+x <-setDT(LDA_09.topics)
+x$Title=title
+x_09 <-x[,c(2,1)]
+
+#Writing a file with the corresponding values
+write.table(x_09, "LDA_topics_monograms_09.csv", sep = ",")
+
+
+#10 topics
+#Getting the topic list into a dataframe
+topics_LDA<-topics(LDA_10)
+LDA_10.topics <- as.data.frame(topics(LDA_10))
+
+#Counting to make sure all observations have been successfully retrieved
+count(LDA_10.topics)
+
+#Converting to datatable, adding title and putting it at position 1 of the dataframe
+x <-setDT(LDA_10.topics)
+x$Title=title
+x_10 <-x[,c(2,1)]
+
+#Writing a file with the corresponding values
+write.table(x_10, "LDA_topics_monograms_10.csv", sep = ",")
+
+
+#Creating a dataset comprising all the topics from 6 to 10 and subsequently setting it as DT
+LDA_monograms_final<-as.data.frame(cbind(x_06, x_07$`topics(LDA_07)`, x_08$`topics(LDA_08)`, x_09$`topics(LDA_09)`, x_10$`topics(LDA_10)`))
+LDA_monograms<-setDT(LDA_monograms_final)
+
+#renaming columns for topics from 6 to 10
+setnames(LDA_monograms, "topics(LDA_06)", "topics_LDA_06")
+setnames(LDA_monograms, "V2", "topics_LDA_07")
+setnames(LDA_monograms, "V3", "topics_LDA_08")
+setnames(LDA_monograms, "V4", "topics_LDA_09")
+setnames(LDA_monograms, "V5", "topics_LDA_10")
+
+#Writing the result in a csv
+write.table(LDA_monograms, "LDA_topics_monograms_final.csv", sep = ",", row.names = FALSE)
+
+
+
+# 10. LDA WITH BIGRAMS
+
+#Creating n-grams with n = 2
+token_bi = tokens_ngrams(toks_final, n = 2)
+
+#Creating a dfm with bigrams
+dfm_bi = dfm(token_bi)
+
+#removing stopwords from the dfm. Particular attention is put to removing both the leading and 
+#and tailing stopwords within the bigrams
+dfm_bi<- dfm_remove(dfm_bi, 
+                      pattern = c(paste0("^", stopwords("english"), "_"), 
+                                  paste0("_", stopwords("english"), "$")), 
+                      valuetype = "regex")
+
+#trimming the new dfm
+lyrics_dfm_bi_trim = dfm_trim(dfm_bi ,
+                            # min 1%
+                            min_docfreq = 0.001,
+                            #  max 90%
+                            max_docfreq = 0.9,
+                            docfreq_type = "prop" ) 
+
+#Converting the new trimmed dfm to topicmodels to perform the LDA
+lda_bi = convert(lyrics_dfm_bi_trim, to = "topicmodels")
+
+# We identify topic numbers and then loop through them to obtain a more efficient result and to have a precise idea on how perplexity evolves
+#as topics increase
+k = c( 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20 )
+kvec = formatC( k, width = 2, flag = "0" )
+
+
+
+for ( i in seq_along( k ) ) {
+  cat( "Computing LDA with", k[ i ], "topics\n" )
+  assign( paste0( "LDA_", kvec[ i ] ), 
+          LDA(lda_bi , k[ i ] ) )
+} 
+
+#Getting the first 30 words for each topic from 2 to 20 topics
+n_words = 30
+get_terms( LDA_02, n_words )
+get_terms( LDA_03, n_words )
+get_terms( LDA_04, n_words )
+get_terms( LDA_05, n_words )
+get_terms( LDA_06, n_words )
+get_terms( LDA_07, n_words )
+get_terms( LDA_08, n_words )
+get_terms( LDA_09, n_words )
+get_terms( LDA_10, n_words )
+get_terms( LDA_15, n_words )
+get_terms( LDA_20, n_words )
+
+
+#Calculating perplexity as more topics are detected
+lda_obj = objects( pattern = "LDA\\_" )
+perp = vector( "numeric", length( lda_obj ) )
+
+for ( i in seq_along( perp ) ) {
+  perp[ i ] = perplexity( get( lda_obj[ i ] ) )
+}
+
+names( perp ) = kvec
+perp_dt = data.table( k = as.integer( names( perp ) ),
+                      perplexity = perp )
+
+#Visualizing perplexity to find out what the best # number is
+ggplot( data = perp_dt, aes( x = k, y = perplexity ) ) +
+  geom_line() + geom_point() + 
+  xlab( "Number of Topics [k]" ) +
+  ylab( "Perplexity Index" ) +
+  scale_x_continuous( breaks = c( 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20) ) + 
+  ggtitle( "Perplexity Index by the Number of Topics" )
+
+
+#Getting the words of the topics for each topic in a dataframe so they are easily retrievable
+LDA_topics <- cbind(as.data.frame(get_terms( LDA_06, n_words )), 
+                    as.data.frame(get_terms( LDA_07, n_words )), 
+                    as.data.frame(get_terms( LDA_08, n_words )),
+                    as.data.frame(get_terms( LDA_09, n_words )))
+
+#Writing a csv with the corresponsing file
+write.table(LDA_topics, "LDA_top30_bigrams.csv", sep = ",", row.names = FALSE)
+
+
+#Getting the topic corresponding to each observation into a dataframe
+#6 topics
+#Getting topics for each song and creating a dataframe out of it
+topics_LDA<-topics(LDA_06)
+LDA_06_topics <- as.data.frame(topics(LDA_06))
+
+#Quick check that all songs have been associated with a topic
+count(LDA_06_topics)
+
+#setting the dataframe as DT and including the title in first position
+x <-setDT(LDA_06_topics)
+x$Title=title
+x_06 <-x[,c(2,1)]
+
+#Writing corresponding csv
+write.table(x_06, "LDA_topics_monograms_06.csv", sep = ",")
+
+
+#7 topics 
+#Getting topics for each song and creating a dataframe out of it
+topics_LDA<-topics(LDA_07)
+LDA_07.topics <- as.data.frame(topics(LDA_07))
+
+#Quick check that all songs have been associated with a topic
+count(LDA_07.topics)
+
+#setting the dataframe as DT and including the title in first position
+x <-setDT(LDA_07.topics)
+x$Title=title
+x_07 <-x[,c(2,1)]
+
+#Writing corresponding csv
+write.table(x_07, "LDA_topics_monograms_07.csv", sep = ",")
+
+
+#8 topics
+#Getting topics for each song and creating a dataframe out of it
+topics_LDA<-topics(LDA_08)
+LDA_08.topics <- as.data.frame(topics(LDA_08))
+
+#Quick check that all songs have been associated with a topic
+count(LDA_08.topics)
+
+#setting the dataframe as DT and including the title in first position
+x <-setDT(LDA_08.topics)
+x$Title=title
+x_08 <-x[,c(2,1)]
+names(x_08)[2] <- "LDA_Topic"
+
+#Writing corresponding csv
+write.table(x_08, "LDA_topics_final.csv", sep = ",", row.names = FALSE)
+
+
+#9 topics
+#Getting topics for each song and creating a dataframe out of it
+topics_LDA<-topics(LDA_09)
+LDA_09.topics <- as.data.frame(topics(LDA_09))
+
+#Quick check that all songs have been associated with a topic
+count(LDA_09.topics)
+
+#setting the dataframe as DT and including the title in first position
+x <-setDT(LDA_09.topics)
+x$Title=title
+x_09 <-x[,c(2,1)]
+
+#Writing corresponding csv
+write.table(x_09, "LDA_topics_monograms_09.csv", sep = ",")
+
+
+#10 topics
+#Getting topics for each song and creating a dataframe out of it
+topics_LDA<-topics(LDA_10)
+LDA_10.topics <- as.data.frame(topics(LDA_10))
+
+#Quick check that all songs have been associated with a topic
+count(LDA_10.topics)
+
+#setting the dataframe as DT and including the title in first position
+x <-setDT(LDA_10.topics)
+x$Title=title
+x_10 <-x[,c(2,1)]
+
+#Creating final csv with all topics from 6 to 10
+LDA_monograms_final<-as.data.frame(cbind(x_06, x_07$`topics(LDA_07)`, x_08$`topics(LDA_08)`, x_09$`topics(LDA_09)`, x_10$`topics(LDA_10)`))
+
+#Setting as DT
+LDA_monograms<-setDT(LDA_monograms_final)
+
+#Renaming  columns from topic 6 to 10 for clarity
+setnames(LDA_monograms, "topics(LDA_06)", "topics_LDA_06")
+
+setnames(LDA_monograms, "V2", "topics_LDA_07")
+
+setnames(LDA_monograms, "V3", "topics_LDA_08")
+
+setnames(LDA_monograms, "V4", "topics_LDA_09")
+
+setnames(LDA_monograms, "V5", "topics_LDA_10")
+
+#Writing corresponding csv
+write.table(LDA_monograms, "LDA_topics_monograms_final.csv", sep = ",", row.names = FALSE)
+
+
+#11. NAIVE BAYES ------------------------------------------------
+
+#Reading a file containing our manually set labels for the first 1000 songs out of the 6507 comprising our corpus
+dat = read.csv("Labeling_Final.csv", header = TRUE)
+
+nrow(dat)
+
+#Isolating the Score column
+dat[["Score"]]
+
+#Creating a list with our labels and a number of NAs corresponding to the number of songs whose tone needs to be predicted
+s <-c(dat[["Score"]], rep(NA, times = 5192))
+
+x = lyrics_dfm_trim 
+
+#Encoding the vector as a factor and carrying out the naive bayes text model  with our dfm and labels
+y <-factor(x, s, ordered = TRUE)
+tmod1 <-textmodel_nb(x, s, prior = "docfreq") #, distribution = Bernoulli o multinomial)
+
+#Prediction specifying the probability of each song to belong to each tone (1, -1, 0)
+predict(tmod1, type = "prob")
+
+#Prediction specifying the most likely tone out of the three
+predict(tmod1)
+
+#Setting the predictions as a dataframe
+bayes<-as.data.frame(predict(tmod1))
+
+#And then as a DT to which the titles are added
+bayes_final<-setDT((bayes))
+bayes_final$Title = title
+
+#Titles are put in position one
+bayes_final <-bayes_final[,c(2,1)]
+
+#And the prediction column is renamed for clarity
+colnames(bayes_final)[colnames(bayes_final) == 'predict(tmod1)'] <- 'Bayes'
+
+#A csv is then written to store the predicted values
+write.table(bayes, "bayes.csv", sep = ",", row.names = FALSE)
+
+
+#MODEL ACCURACY: CROSS TABLE AND CONFUSION MATRIX
+#The predictive power and the accuracy of the naive bayes model are now tested through a cross table and confusion matrix
+
+#A dfm for training is created with the first 800 songs
+dfmat_train <- corpus_subset(lyrics_crps, 1:ndoc(lyrics_crps) %in% 1:800)%>%
+  dfm(remove = stopwords("en"), stem = TRUE)
+
+#...while the last 200 out of the songs for which we manually outlined labels are included in the test set for the model validation process
+dfmat_test <- corpus_subset(lyrics_crps, 1:ndoc(lyrics_crps) %in% 801:1000)%>%
+  dfm(remove = stopwords("en"), stem = TRUE)
+
+#The first 800 labels are picked from the previously imported file in which all our labels are listed
+w <- dat$Bayes_score[1:800]
+
+#And a naive bayes textmodel is run on these 800 songs. This model is essential as it will enable the prediction of
+#the last 200 labeled songs (and therefore will also enable the validation of the accuracy of the model)
+tmod_nb <- textmodel_nb(dfmat_train, w)
+
+#The actual labels we outlined for songs 801 to 1000 - namely what we assume is the right classification - are used
+#as the parameter against which to measure the accuracy of the model 
+actual_class <- dat$Bayes_score[801:1000]
+
+#dfm_match() is used to ensure that correspondence exists between the features of the training
+#and the test set, as naive bayes can only take into account features occurring in both sets
+dfmat_matched <- dfm_match(dfmat_test, features = featnames(dfmat_train))
+
+#The predicted class is therefore composed of the labels for songs from 801 to 1000, for which the tmod_nb based on 
+#our training set is used
+predicted_class <- predict(tmod_nb, newdata = dfmat_matched)
+
+#Here a cross table is created to compare the accuracy of the model in predicting labels for songs 801 to 1000 with the accurate categorization
+#of songs 801 to 1000 manually made by our team
+s <-table(actual_class, predicted_class)
+
+#And, dulcis in fundo, a full-on confusion matrix is created to inspect the specific accuracy parameters
+confusionMatrix(s, mode = "everything")
+
+#If you ventured till the end of this script, thank you so much!! 
+
+#Have a great day ;)
+
+############################################################################
+##############################END OF SCRIPT#################################
+############################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
